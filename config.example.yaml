@@ -1,0 +1,71 @@
+# yt2tt — copy to config.yaml and edit. Secrets go to .env, not here.
+
+search:
+  # Что искать. Каждая строка — отдельный поисковый запрос на YouTube.
+  queries:
+    - "китайская дорама 1 серия"
+    - "chinese drama eng sub full episode"
+  # Можно вместо/вместе с поиском брать конкретные каналы и плейлисты.
+  channels: []      # ["UCxxxxxxxxxxxxxxxxxxxxxx"]
+  playlists: []     # ["PLxxxxxxxxxxxxxxxxxxxxxx"]
+
+  backend: auto           # auto | api (нужен YOUTUBE_API_KEY) | ytdlp (без ключа)
+  max_results: 25         # сколько результатов на один запрос
+  region_code: RU
+  relevance_language: ru
+  published_within_days: 90
+
+  min_duration_sec: 240   # отсекаем шорты и обрезки
+  max_duration_sec: 7200  # и многочасовые склейки
+  require_keywords: []    # если задано — в названии должно быть хоть одно
+  exclude_keywords: ["trailer", "трейлер", "reaction", "обзор", "shorts"]
+  exclude_channels: []
+
+download:
+  dir: work/downloads
+  format: "bv*[height<=1080]+ba/b[height<=1080]"
+  cookies_file: null      # путь к cookies.txt, если нужен доступ к возрастным видео
+  rate_limit: null        # например "5M"
+  max_filesize_mb: 4096
+  retries: 3
+
+clip:
+  dir: work/clips
+  part_seconds: 60        # длина одной части
+  min_part_seconds: 20    # хвост короче — приклеивается к предыдущей части
+  skip_intro_seconds: 0   # сколько отрезать в начале (заставка)
+  skip_outro_seconds: 0   # и в конце (титры)
+  max_parts: 10           # максимум частей с одного видео
+  orientation: blur       # blur (размытый фон) | crop (обрезка по центру) | pad | none
+  width: 1080
+  height: 1920
+  fps: 30
+  crf: 23                 # меньше = лучше качество и больше файл
+  preset: veryfast
+  audio_bitrate: "128k"
+
+metadata:
+  # Плейсхолдеры: {title} {index} {total} {channel} {hashtags}
+  title_template: "{title} — часть {index}/{total}"
+  hashtags: ["#дорама", "#cdrama", "#сериал", "#дорамы"]
+  max_title_length: 2200
+
+tiktok:
+  mode: inbox             # inbox — черновик в приложении; direct — сразу пост
+  privacy_level: SELF_ONLY  # PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY
+  disable_comment: false
+  disable_duet: false
+  disable_stitch: false
+  video_cover_timestamp_ms: 1000
+  chunk_size_mb: 10       # 5..64 — требование API
+  post_interval_seconds: 900   # пауза между постами
+  daily_limit: 10         # максимум постов за сутки
+  poll_timeout_seconds: 600
+
+runtime:
+  state_db: work/state.db
+  log_file: work/yt2tt.log
+  dry_run: false
+  keep_source: false      # удалять скачанный оригинал после нарезки
+  keep_clips: true        # оставлять готовые куски на диске после загрузки
+  max_videos_per_run: 1
