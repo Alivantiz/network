@@ -36,29 +36,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="do everything except the actual TikTok upload"
     )
 
+    # Repeated on every subcommand so both `yt2tt --dry-run upload` and
+    # `yt2tt upload --dry-run` work. SUPPRESS keeps the subcommand copy from
+    # overwriting a value already given before the subcommand.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
+    common.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="check external tools and credentials")
-    sub.add_parser("init", help="write a starter config.yaml and .env next to you")
-    sub.add_parser("search", help="run discovery only and queue new videos")
+    sub.add_parser("doctor", parents=[common], help="check external tools and credentials")
+    sub.add_parser("init", parents=[common], help="write a starter config.yaml and .env")
+    sub.add_parser("search", parents=[common], help="run discovery only and queue new videos")
 
-    p_add = sub.add_parser("add", help="queue one YouTube URL by hand")
+    p_add = sub.add_parser("add", parents=[common], help="queue one YouTube URL by hand")
     p_add.add_argument("url", nargs="+")
 
-    p_prepare = sub.add_parser("prepare", help="download queued videos and cut them into parts")
+    p_prepare = sub.add_parser(
+        "prepare", parents=[common], help="download queued videos and cut them into parts"
+    )
     p_prepare.add_argument("--limit", type=int, default=None, help="how many videos to process")
 
-    p_upload = sub.add_parser("upload", help="post pending parts to TikTok")
+    p_upload = sub.add_parser("upload", parents=[common], help="post pending parts to TikTok")
     p_upload.add_argument("--limit", type=int, default=None, help="how many clips to post")
 
-    p_run = sub.add_parser("run", help="search + prepare + upload in one go")
+    p_run = sub.add_parser("run", parents=[common], help="search + prepare + upload in one go")
     p_run.add_argument("--skip-discovery", action="store_true")
     p_run.add_argument("--upload-limit", type=int, default=None)
 
-    p_status = sub.add_parser("status", help="show queue state")
+    p_status = sub.add_parser("status", parents=[common], help="show queue state")
     p_status.add_argument("--json", action="store_true")
 
-    p_auth = sub.add_parser("auth", help="TikTok OAuth helpers")
+    p_auth = sub.add_parser("auth", parents=[common], help="TikTok OAuth helpers")
     auth_sub = p_auth.add_subparsers(dest="auth_command", required=True)
     p_auth_url = auth_sub.add_parser("url", help="print the authorisation URL to open in a browser")
     p_auth_url.add_argument("--redirect-uri", required=True)
@@ -82,9 +91,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
 
-    if args.dry_run:
+    if getattr(args, "dry_run", False):
         cfg.runtime.dry_run = True
-    setup_logging(args.verbose, Path(cfg.runtime.log_file) if cfg.runtime.log_file else None)
+    verbose = getattr(args, "verbose", False)
+    setup_logging(verbose, Path(cfg.runtime.log_file) if cfg.runtime.log_file else None)
 
     if args.command == "init":
         return cmd_init()

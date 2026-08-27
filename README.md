@@ -48,8 +48,8 @@ $EDITOR config.yaml              # запросы, длина части, ори
 $EDITOR .env                     # ключи (см. ниже)
 yt2tt doctor                     # проверит ffmpeg, yt-dlp и ключи
 
-yt2tt add "https://youtu.be/XXXX" --dry-run   # прогон на одном видео
-yt2tt prepare --dry-run
+yt2tt add "https://youtu.be/XXXX"             # прогон на одном видео
+yt2tt prepare
 yt2tt upload --dry-run           # покажет, что бы залилось, но не зальёт
 
 yt2tt run                        # полный цикл: поиск → нарезка → заливка
@@ -97,6 +97,7 @@ Access token обновляется автоматически по refresh toke
 | `yt2tt auth url\|exchange\|whoami` | OAuth-помощники TikTok |
 
 Общие флаги: `-c config.yaml`, `--env-file .env`, `-v` (debug), `--dry-run`.
+Последние два работают и до, и после подкоманды.
 
 ## Настройка
 
@@ -134,7 +135,7 @@ Access token обновляется автоматически по refresh toke
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 61 тест, без сети и без ffmpeg (внешние вызовы застабены)
+pytest -q          # 71 тест, без сети и без ffmpeg (внешние вызовы застабены)
 ruff check src tests
 ```
 
