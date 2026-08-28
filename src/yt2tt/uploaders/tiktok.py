@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from ..config import TikTokConfig
@@ -228,7 +229,13 @@ class TikTokUploader:
             delay = min(delay * 1.5, 20.0)
         return UploadResult(publish_id=publish_id, status=last, detail="timed out while polling")
 
-    def upload(self, path: Path, caption: str) -> UploadResult:
+    def upload(
+        self,
+        path: Path,
+        caption: str,
+        *,
+        on_publish_id: Callable[[str], None] | None = None,
+    ) -> UploadResult:
         size = path.stat().st_size
         if size == 0:
             raise UploadError(f"refusing to upload empty file: {path}")
@@ -239,6 +246,10 @@ class TikTokUploader:
         upload_url = data.get("upload_url")
         if not publish_id or not upload_url:
             raise UploadError(f"init returned no upload target: {data}")
+        # Hand the id over before a single byte moves: from here on the post may
+        # exist on TikTok's side even if we never see the result.
+        if on_publish_id is not None:
+            on_publish_id(publish_id)
 
         self._put_chunks(upload_url, path, size)
         result = self.poll_status(publish_id)

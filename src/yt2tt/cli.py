@@ -11,10 +11,11 @@ from pathlib import Path
 
 from . import __version__
 from .config import Config
-from .errors import Yt2TtError
+from .errors import AuthError, ConfigError, Yt2TtError
 from .logging_setup import setup_logging
 from .pipeline import Pipeline
 from .state import Store
+from .tools import find_tool
 
 log = logging.getLogger("yt2tt.cli")
 
@@ -96,21 +97,21 @@ def main(argv: list[str] | None = None) -> int:
     verbose = getattr(args, "verbose", False)
     setup_logging(verbose, Path(cfg.runtime.log_file) if cfg.runtime.log_file else None)
 
-    if args.command == "init":
-        return cmd_init()
-    if args.command == "auth":
-        return cmd_auth(args, cfg)
-
+    # Every command runs inside one handler so an expected failure reaches the
+    # user as a one-line message instead of a traceback.
     try:
+        if args.command == "init":
+            return cmd_init()
+        if args.command == "auth":
+            return cmd_auth(args, cfg)
+
         cfg.validate()
-    except Yt2TtError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 2
-
-    try:
         with Store(cfg.runtime.state_db) as store:
             pipeline = Pipeline(cfg, store)
             return dispatch(args, cfg, store, pipeline)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
     except Yt2TtError as exc:
         log.error("%s", exc)
         return 1
@@ -154,12 +155,12 @@ def cmd_status(store: Store, *, as_json: bool) -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
     print("videos:")
-    for status, count in sorted(summary["videos"].items()) or []:
+    for status, count in sorted(summary["videos"].items()):
         print(f"  {status:<12} {count}")
     if not summary["videos"]:
         print("  (empty)")
     print("clips:")
-    for status, count in sorted(summary["clips"].items()) or []:
+    for status, count in sorted(summary["clips"].items()):
         print(f"  {status:<12} {count}")
     if not summary["clips"]:
         print("  (empty)")
@@ -167,25 +168,30 @@ def cmd_status(store: Store, *, as_json: bool) -> int:
 
 
 def cmd_doctor(cfg: Config) -> int:
-    import shutil
-
     ok = True
     for tool in ("yt-dlp", "ffmpeg", "ffprobe"):
-        path = shutil.which(tool)
+        path = find_tool(tool)
         print(f"[{'ok ' if path else 'MISS'}] {tool}: {path or 'not found in PATH'}")
         ok = ok and bool(path)
 
     key = cfg.search.youtube_api_key
     key_note = "set" if key else "not set (yt-dlp backend will be used)"
     print(f"[{'ok ' if key else '--'}] YOUTUBE_API_KEY: {key_note}")
+
+    # TikTok credentials only matter for a real upload, so a dry run reports
+    # them without failing the check.
+    required = not cfg.runtime.dry_run
     for name, env in (
         ("client_key", "TIKTOK_CLIENT_KEY"),
         ("client_secret", "TIKTOK_CLIENT_SECRET"),
         ("refresh_token", "TIKTOK_REFRESH_TOKEN"),
     ):
         value = getattr(cfg.tiktok, name)
-        print(f"[{'ok ' if value else 'MISS'}] {env}: {'set' if value else 'not set'}")
-        ok = ok and bool(value)
+        mark = "ok " if value else ("MISS" if required else "--")
+        note = "set" if value else ("not set" if required else "not set (not needed for --dry-run)")
+        print(f"[{mark}] {env}: {note}")
+        if required:
+            ok = ok and bool(value)
     print(f"search backend: {'api' if key else 'ytdlp'}   tiktok mode: {cfg.tiktok.mode}")
     return 0 if ok else 1
 
@@ -213,19 +219,27 @@ def cmd_auth(args: argparse.Namespace, cfg: Config) -> int:
         if not (cfg.tiktok.client_key and cfg.tiktok.client_secret):
             print("TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET are not set", file=sys.stderr)
             return 2
-        resp = requests.post(
-            TOKEN_URL,
-            data={
-                "client_key": cfg.tiktok.client_key,
-                "client_secret": cfg.tiktok.client_secret,
-                "code": urllib.parse.unquote(args.code),
-                "grant_type": "authorization_code",
-                "redirect_uri": args.redirect_uri,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=30,
-        )
-        payload = resp.json()
+        try:
+            resp = requests.post(
+                TOKEN_URL,
+                data={
+                    "client_key": cfg.tiktok.client_key,
+                    "client_secret": cfg.tiktok.client_secret,
+                    "code": urllib.parse.unquote(args.code),
+                    "grant_type": "authorization_code",
+                    "redirect_uri": args.redirect_uri,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise AuthError(f"token exchange request failed: {exc}") from exc
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise AuthError(
+                f"token exchange returned non-JSON [{resp.status_code}]: {resp.text[:300]}"
+            ) from exc
         if "refresh_token" not in payload:
             print(f"exchange failed: {payload}", file=sys.stderr)
             return 1
@@ -250,20 +264,29 @@ def cmd_auth(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_init() -> int:
-    here = Path(__file__).resolve().parents[2]
-    pairs = [
-        (here / "config.example.yaml", Path("config.yaml")),
-        (here / ".env.example", Path(".env")),
-    ]
-    for src, dst in pairs:
+    """Copy the packaged starter files into the working directory.
+
+    The templates ship inside the package rather than being read from the
+    source tree, so ``init`` works the same from a wheel and from a checkout.
+    """
+    from importlib import resources
+
+    templates = resources.files("yt2tt.templates")
+    pairs = [("config.example.yaml", Path("config.yaml")), ("env.example", Path(".env"))]
+    failed = False
+    for name, dst in pairs:
         if dst.exists():
             print(f"skip {dst} (already exists)")
             continue
-        if not src.is_file():
-            print(f"missing template {src}", file=sys.stderr)
+        try:
+            dst.write_text((templates / name).read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as exc:
+            print(f"could not create {dst} from template {name}: {exc}", file=sys.stderr)
+            failed = True
             continue
-        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         print(f"created {dst}")
+    if failed:
+        return 1
     print("\nEdit config.yaml (queries, part length) and .env (keys), then run: yt2tt doctor")
     return 0
 

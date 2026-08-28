@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import ClipConfig
 from .errors import VideoError
+from .tools import require_tool
 
 log = logging.getLogger("yt2tt.video")
 
@@ -99,17 +99,19 @@ class Cutter:
         self.dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def ensure_available() -> None:
-        for tool in ("ffmpeg", "ffprobe"):
-            if shutil.which(tool) is None:
-                raise VideoError(f"{tool} not found in PATH — install ffmpeg")
+    def ensure_available() -> dict[str, str]:
+        """Return the ffmpeg/ffprobe binaries to run, or raise if either is absent."""
+        return {
+            tool: require_tool(tool, VideoError, "install ffmpeg")
+            for tool in ("ffmpeg", "ffprobe")
+        }
 
     @staticmethod
     def probe_duration(path: Path) -> float:
-        Cutter.ensure_available()
+        binaries = Cutter.ensure_available()
         proc = subprocess.run(
             [
-                "ffprobe",
+                binaries["ffprobe"],
                 "-v",
                 "error",
                 "-show_entries",
@@ -136,14 +138,14 @@ class Cutter:
         self, source: Path, video_id: str, segment: Segment, *, overwrite: bool = False
     ) -> Path:
         """Render one segment to a vertical mp4 and return its path."""
-        self.ensure_available()
+        binaries = self.ensure_available()
         out = self.clip_path(video_id, segment.index)
         if out.exists() and out.stat().st_size > 0 and not overwrite:
             log.info("clip already rendered: %s", out.name)
             return out
 
         cmd = [
-            "ffmpeg",
+            binaries["ffmpeg"],
             "-hide_banner",
             "-loglevel",
             "error",

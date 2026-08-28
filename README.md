@@ -50,7 +50,7 @@ yt2tt doctor                     # проверит ffmpeg, yt-dlp и ключи
 
 yt2tt add "https://youtu.be/XXXX"             # прогон на одном видео
 yt2tt prepare
-yt2tt upload --dry-run           # покажет, что бы залилось, но не зальёт
+yt2tt upload --dry-run           # покажет, что бы залилось; очередь не трогает
 
 yt2tt run                        # полный цикл: поиск → нарезка → заливка
 yt2tt status                     # что в очереди и что уже опубликовано
@@ -101,7 +101,7 @@ Access token обновляется автоматически по refresh toke
 
 ## Настройка
 
-Всё в `config.yaml` (полный комментированный пример — `config.example.yaml`).
+Всё в `config.yaml` (полный комментированный пример — `src/yt2tt/templates/config.example.yaml`, его же кладёт `yt2tt init`).
 Основное:
 
 | Ключ | Смысл |
@@ -135,7 +135,7 @@ Access token обновляется автоматически по refresh toke
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 71 тест, без сети и без ffmpeg (внешние вызовы застабены)
+pytest -q          # 86 тестов, без сети и без ffmpeg (внешние вызовы застабены)
 ruff check src tests
 ```
 
@@ -152,7 +152,18 @@ src/yt2tt/
   uploaders/      TikTok Content Posting API + dry-run
   pipeline.py     склейка стадий, лимиты, очистка
   state.py        SQLite: videos / clips
+  tools.py        поиск ffmpeg/yt-dlp, включая неактивированный venv
+  templates/      заготовки config.yaml и .env для `yt2tt init`
 ```
+
+## Что важно знать про состояние
+
+`--dry-run` ничего не пишет в базу: клипы остаются в очереди, и обычный запуск
+после него публикует всё как надо.
+
+Если процесс умрёт после того, как TikTok выдал `publish_id`, клип останется в
+статусе `uploading` вместе с этим идентификатором. Следующий запуск спросит у
+TikTok, чем кончилась та публикация, вместо повторной заливки того же ролика.
 
 ## Ограничения
 

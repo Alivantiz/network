@@ -206,7 +206,7 @@ class Config:
             raise ConfigError(
                 "missing TikTok credentials: "
                 + ", ".join(ENV_PREFIX_MAP[m] for m in missing)
-                + " (see .env.example)"
+                + " (run `yt2tt init` to write a .env template)"
             )
         if not (self.tiktok.refresh_token or self.tiktok.access_token):
             raise ConfigError(

@@ -10,8 +10,8 @@ from .config import Config
 from .downloader import Downloader
 from .errors import Yt2TtError
 from .metadata import build_caption
-from .state import Store
-from .uploaders.base import DryRunUploader, Uploader
+from .state import ClipRow, Store
+from .uploaders.base import DryRunUploader, Uploader, UploadResult
 from .uploaders.tiktok import TikTokUploader
 from .video import Cutter, plan_segments
 from .youtube import YouTubeSearcher
@@ -25,6 +25,23 @@ def build_uploader(cfg: Config) -> Uploader:
     cfg.require_tiktok_credentials()
     cache = Path(cfg.runtime.state_db).with_name(".tiktok_token.json")
     return TikTokUploader(cfg.tiktok, token_cache=cache)
+
+
+class _Handover:
+    """Records the publish id a clip was given, the moment the remote hands it out.
+
+    Once TikTok has issued an id the post may exist on their side, so the clip
+    must stay resumable instead of being marked failed and re-sent later.
+    """
+
+    def __init__(self, store: Store, clip_id: int) -> None:
+        self._store = store
+        self._clip_id = clip_id
+        self.publish_id: str | None = None
+
+    def __call__(self, publish_id: str) -> None:
+        self.publish_id = publish_id
+        self._store.set_clip_status(self._clip_id, "uploading", publish_id=publish_id)
 
 
 class Pipeline:
@@ -130,14 +147,29 @@ class Pipeline:
 
     # ---- stage 4: upload ------------------------------------------------
     def upload_pending(self, limit: int | None = None) -> int:
+        """Post pending parts. A dry run reports but never records anything."""
+        dry = self.cfg.runtime.dry_run
         clips = self.store.pending_clips(limit=limit)
         if not clips:
             log.info("nothing pending to upload")
             return 0
 
+        # Build the uploader up front: a missing credential is a problem with the
+        # run, not with any single clip, and must not mark the whole queue failed.
+        uploader = self.uploader
+
         posted = 0
         for clip in clips:
-            if not self._quota_allows():
+            # A clip left in 'uploading' with a publish id was already handed to
+            # TikTok by a run that died before it saw the verdict. Ask for the
+            # verdict instead of posting the same part twice.
+            if not dry and clip.status == "uploading" and clip.publish_id:
+                if self._resume(clip):
+                    posted += 1
+                continue
+
+            # Dry-run posts never reach the database, so count them separately.
+            if not self._quota_allows(extra=posted if dry else 0):
                 log.warning("daily upload limit (%d) reached", self.cfg.tiktok.daily_limit)
                 break
             self._wait_for_interval()
@@ -146,37 +178,73 @@ class Pipeline:
             if not path.is_file():
                 msg = f"clip file missing: {path}"
                 log.error(msg)
-                self.store.set_clip_status(clip.id, "failed", error=msg)
+                if not dry:
+                    self.store.set_clip_status(clip.id, "failed", error=msg)
                 continue
 
-            self.store.set_clip_status(clip.id, "uploading")
+            handover = _Handover(self.store, clip.id)
+            if not dry:
+                self.store.set_clip_status(clip.id, "uploading")
             try:
-                result = self.uploader.upload(path, clip.title)
+                result = uploader.upload(path, clip.title, on_publish_id=None if dry else handover)
             except Yt2TtError as exc:
                 log.error("upload failed for %s: %s", path.name, exc)
-                self.store.set_clip_status(clip.id, "failed", error=str(exc)[:500])
+                if dry:
+                    continue
+                if handover.publish_id:
+                    log.warning(
+                        "%s stays open: publish %s already exists and is resolved on the next run",
+                        path.name,
+                        handover.publish_id,
+                    )
+                    self.store.set_clip_status(clip.id, "uploading", error=str(exc)[:500])
+                else:
+                    self.store.set_clip_status(clip.id, "failed", error=str(exc)[:500])
                 continue
 
-            if not result.ok:
-                self.store.set_clip_status(
-                    clip.id, "failed", publish_id=result.publish_id, error=result.status
-                )
-                continue
+            if dry:
+                posted += 1
+            elif self._settle(clip, result):
+                posted += 1
 
-            self.store.set_clip_status(clip.id, "uploaded", publish_id=result.publish_id)
-            posted += 1
-            if not self.cfg.runtime.keep_clips and not self.cfg.runtime.dry_run:
-                path.unlink(missing_ok=True)
-            if self.store.video_is_complete(clip.video_id):
-                self.store.set_video_status(clip.video_id, "done")
-                log.info("all parts of %s are posted", clip.video_id)
-        log.info("uploaded %d clip(s)", posted)
+        if dry:
+            log.info("dry run: %d clip(s) would have been posted", posted)
+        else:
+            log.info("uploaded %d clip(s)", posted)
         return posted
 
-    def _quota_allows(self) -> bool:
+    def _resume(self, clip: ClipRow) -> bool:
+        """Resolve a clip that was already sent but whose result we never saw."""
+        log.info("clip %s was already sent as %s — checking its status", clip.id, clip.publish_id)
+        try:
+            result = self.uploader.poll_status(clip.publish_id)
+        except Yt2TtError as exc:
+            log.error("could not resolve publish %s: %s", clip.publish_id, exc)
+            self.store.set_clip_status(clip.id, "failed", error=str(exc)[:500])
+            return False
+        return self._settle(clip, result)
+
+    def _settle(self, clip: ClipRow, result: UploadResult) -> bool:
+        """Record the outcome of one upload. Returns True when it was posted."""
+        if not result.ok:
+            self.store.set_clip_status(
+                clip.id, "failed", publish_id=result.publish_id, error=result.status
+            )
+            return False
+
+        self.store.set_clip_status(clip.id, "uploaded", publish_id=result.publish_id)
+        if not self.cfg.runtime.keep_clips:
+            Path(clip.path).unlink(missing_ok=True)
+        if self.store.video_is_complete(clip.video_id):
+            self.store.set_video_status(clip.video_id, "done")
+            log.info("all parts of %s are posted", clip.video_id)
+        return True
+
+    def _quota_allows(self, extra: int = 0) -> bool:
         if self.cfg.tiktok.daily_limit <= 0:
             return True
-        return self.store.uploads_since(time.time() - 86400) < self.cfg.tiktok.daily_limit
+        uploaded_today = self.store.uploads_since(time.time() - 86400)
+        return uploaded_today + extra < self.cfg.tiktok.daily_limit
 
     def _wait_for_interval(self) -> None:
         interval = self.cfg.tiktok.post_interval_seconds

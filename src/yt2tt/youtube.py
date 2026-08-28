@@ -21,6 +21,7 @@ from typing import Any
 
 from .config import SearchConfig
 from .errors import SearchError
+from .tools import require_tool
 
 log = logging.getLogger("yt2tt.youtube")
 
@@ -225,7 +226,7 @@ class YouTubeSearcher:
         import json
 
         cmd = [
-            "yt-dlp",
+            require_tool("yt-dlp", SearchError, "pip install yt-dlp"),
             "--flat-playlist",
             "--dump-json",
             "--no-warnings",
@@ -236,8 +237,6 @@ class YouTubeSearcher:
         log.debug("running: %s", " ".join(cmd))
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
-        except FileNotFoundError as exc:
-            raise SearchError("yt-dlp is not installed (pip install yt-dlp)") from exc
         except subprocess.TimeoutExpired as exc:
             raise SearchError(f"yt-dlp timed out on {target}") from exc
         if proc.returncode != 0:

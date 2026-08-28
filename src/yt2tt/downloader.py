@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 
 from .config import DownloadConfig
 from .errors import DownloadError
+from .tools import require_tool
 
 log = logging.getLogger("yt2tt.download")
 
@@ -21,9 +21,9 @@ class Downloader:
         self.dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def ensure_available() -> None:
-        if shutil.which("yt-dlp") is None:
-            raise DownloadError("yt-dlp not found in PATH (pip install -r requirements.txt)")
+    def ensure_available() -> str:
+        """Return the yt-dlp binary to run, or raise if it is not installed."""
+        return require_tool("yt-dlp", DownloadError, "pip install -r requirements.txt")
 
     def existing(self, video_id: str) -> Path | None:
         for candidate in sorted(self.dir.glob(f"{video_id}.*")):
@@ -38,10 +38,10 @@ class Downloader:
             log.info("using cached download %s", cached.name)
             return cached
 
-        self.ensure_available()
+        binary = self.ensure_available()
         output = str(self.dir / "%(id)s.%(ext)s")
         cmd = [
-            "yt-dlp",
+            binary,
             "-f",
             self.cfg.format,
             "--merge-output-format",
@@ -76,9 +76,9 @@ class Downloader:
 
     def metadata(self, url: str) -> dict:
         """Fetch yt-dlp metadata for a single URL without downloading it."""
-        self.ensure_available()
+        binary = self.ensure_available()
         proc = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-playlist", "--no-warnings", url],
+            [binary, "--dump-json", "--no-playlist", "--no-warnings", url],
             capture_output=True,
             text=True,
             check=False,
